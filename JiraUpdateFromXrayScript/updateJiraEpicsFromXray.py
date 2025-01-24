@@ -122,8 +122,8 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
         # Get Nextworld results for all test suites
         testSuiteNamesFormatted = ", ".join(f'"{name}"' for name in testSuiteNames)
         nextworldGetTestResultsResponse = pip._vendor.requests.request(
-            "GET",
-            "http://localhost:8084/v1/automated-testing/test-suites/test-results:getLatestTestResults",
+            "POST",
+            "https://api-qatestingmaster.nextworld.net/v1/automated-testing/test-suites/test-results:getLatestTestResults",
             headers=nextworldRequestHeaderWithToken,
             data=f'''[{testSuiteNamesFormatted}]'''
         )
