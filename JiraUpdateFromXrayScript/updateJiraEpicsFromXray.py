@@ -2,13 +2,13 @@
 File: updateJiraEpicsFromXray.py
 Author: Eryn McCloy
 Date: 1/10/2025
-Description: This script will update the tests in the automated test execution with the most recent test statuses from Nextworld QATesting.master -autotest environment. Additionally, this script will update the Test Summary on all Jira epics for the current release. This includes updating the following fields: Total Tests, Tests Executed, Tests Passed, and Tests Remaining.
+Description: This script will update Xray Tests with the most recent test statuses from Nextworld. The tests to be updated as well as the Nextworld environment used to gather test results from is configurable in the config.json file. Additionally, this script will update the Test Summary on all Jira epics for the current release. This includes updating the following fields: Total Tests, Tests Executed, Tests Passed, Tests Remaining, and Release-able %.
 """
 
 import pip._vendor.requests
 from pip._vendor.requests.auth import HTTPBasicAuth
 import json
-with open('config.json', 'r') as file:
+with open('JiraUpdateFromXrayScript/config.json', 'r') as file:
     config = json.load(file)
 
 print("Running")
@@ -49,7 +49,7 @@ getNextworldAccessTokenResponse = pip._vendor.requests.request(
    "POST",
    "https://auth1.nextworld.net/v2/Authenticate/Tokens",
       json={
-       "Zone": "autotest-QATesting.master",
+       "Zone": config["NEXTWORLD_ENVIRONMENT"],
    },
    headers=nextworldRequestHeader,
    auth=nextworldAuth
@@ -66,7 +66,8 @@ nextworldRequestHeaderWithToken = {
     "Authorization": f'Bearer {getNextworldAccessTokenResponse.json().get('access_token')}'
 }
 testSuitesNotFound = []
-
+testSummariesNotFound = []
+testsFound = 0
 # For each execution specified in the config file:
 for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
 
@@ -84,15 +85,16 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
             print("Error getting Xray automated test execution. Check that the config file has the correct test execution id")
             print(getAutomatedTestExecution.json())
             exit()    
-       
+
+        totalTestsInExecution = getAutomatedTestExecution.json().get('data').get('getTestExecution').get('tests').get('total')
+
         # Add all test ids to a list
         automatedTestExecutionAllTests = getAutomatedTestExecution.json().get('data').get('getTestExecution').get('tests').get('results')
-        totalTestsInExecution = getAutomatedTestExecution.json().get('data').get('getTestExecution').get('tests').get('total')
         testIssueIds = []
         testSuiteNameWithTestSummary = {}
         for test in automatedTestExecutionAllTests:
             testIssueIds.append(test['issueId'])
-            testSuiteNameWithTestSummary[test['jira']['customfield_10505']] = test['jira']['summary']
+            testSuiteNameWithTestSummary[test['jira']['summary']] = test['jira']['customfield_10505']
 
         # format the list of test ids into a string separated by commas. This will be used in the request to get all test runs at once. 
         testIssueIdsFormatted = ", ".join(f'"{id}"' for id in testIssueIds)
@@ -109,31 +111,33 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
             print(getTestRunResponse.json())
             exit()
         
-        # Add test run ids to a dict with the test suite name as the key. Additionally, add the test suite names to a list to be used in the Nextworld request
+        # Add test run ids to a dict with the run id as the key. Additionally, add the test suite names to a list to be used in the Nextworld request
         testRunIds = {}
         testSuiteNames = []
         testRuns = getTestRunResponse.json().get('data').get('getTestRuns').get('results')
         for testRun in testRuns:
             testSuiteNameOnXrayTest = testRun.get('test').get('jira').get('customfield_10505')
             if (testSuiteNameOnXrayTest):
-                testRunIds[testSuiteNameOnXrayTest] = testRun.get('id')
+                testRunIds[testRun.get('id')] = testSuiteNameOnXrayTest
                 testSuiteNames.append(testSuiteNameOnXrayTest)
+                testsFound += 1
 
         # Get Nextworld results for all test suites
         testSuiteNamesFormatted = ", ".join(f'"{name}"' for name in testSuiteNames)
+        body = f'{{"testSuiteNames" : [{testSuiteNamesFormatted}]}}'
         nextworldGetTestResultsResponse = pip._vendor.requests.request(
             "POST",
-            "https://api-qatestingmaster.nextworld.net/v1/automated-testing/test-suites/test-results:getLatestTestResults",
+            f"{config["NEXTWORLD_URL"]}/api/data/v1/automated-testing/test-suites:getLatestResultsForSuites",
             headers=nextworldRequestHeaderWithToken,
-            data=f'''[{testSuiteNamesFormatted}]'''
+            data=body.encode('utf-8')
         )
         nextworldGetTestResultsResponseJson = nextworldGetTestResultsResponse.json()
+
         if not nextworldGetTestResultsResponse.ok:
             print("Error getting Nextworld test results. Check that the Nextworld endpoint '/v1/automated-testing/test-suites/test-results:getLatestNightlyRunTestResults' is working")
             print(nextworldGetTestResultsResponseJson)
             exit()
 
-        # Add test statuses to a dict with the test suite name as the key
         numberOfTests = len(nextworldGetTestResultsResponseJson)
         testSuiteStatuses = {}
         for x in range(numberOfTests):
@@ -156,18 +160,25 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
             if nextworldTestStatus == 'Failed to Run':
                 xrayTestStatus = 'FAILED'
             if nextworldTestStatus is None:
-                testSuitesNotFound.append(testSuiteNameWithTestSummary[nextworldGetTestResultsResponseJson[x].get('TestSuiteName')])
+                testSuitesNotFound.append(nextworldGetTestResultsResponseJson[x].get('TestSuiteName'))
+            
+            testSuiteStatuses[nextworldGetTestResultsResponseJson[x].get('TestSuiteName')] = xrayTestStatus
 
-            if xrayTestStatus:
-                testSuiteStatuses[nextworldGetTestResultsResponseJson[x].get('TestSuiteName')] = xrayTestStatus
+        # Add any test suites not found to a list so it can be reported to the user
+        for test_summary, test_suite in testSuiteNameWithTestSummary.items():
+            if test_suite in testSuitesNotFound:
+                testSummariesNotFound.append(test_summary)
 
         # Merge the testRunIds dict with the testStatuses dict to create a dict with Test Run Id: Test Status
-        runIdStatuses = {testRunIds[suite]: status for suite, status in testSuiteStatuses.items() if suite in testRunIds}
+        runIdStatuses = {}
+        for run_id, suite_name in testRunIds.items():
+            suite_result = testSuiteStatuses[suite_name]
+            runIdStatuses[run_id] = suite_result
 
         # Build the data for the updateTestRun request. An alias is required for each instance of updateTestRunStatus().
         updateTestRunData = ""
         aliasIncrement=0
-        for testRunId, testRunStatus in runIdStatuses.items():
+        for testRunId, testRunStatus  in runIdStatuses.items():
             aliasIncrement+=1
             updateTestRunData +=  "Alias"+str(aliasIncrement)+": "+f"""updateTestRunStatus(id: "{testRunId}", status: "{testRunStatus}")"""
 
@@ -215,6 +226,8 @@ for epicIteration in range(numberOfEpicsFound):
     passedTests = 0
     executedTests = 0
     remainingTests = 0
+    releasablePercent = 0
+    failedReleasableTests = 0
 
     # Xray only returns 100 tests at a time, so we need to loop through the results until we've looked at all the tests. 
     # The API query uses start:"testsCounted" which will increment by 100 each time until all tests are counted.
@@ -274,6 +287,7 @@ for epicIteration in range(numberOfEpicsFound):
                 executedTests += 1
             elif xrayTestStatus == 'FAILED-RELEASEABLE': 
                 executedTests += 1
+                failedReleasableTests += 1
             elif xrayTestStatus == 'BLOCK-RELEASE':
                 executedTests += 1
 
@@ -284,11 +298,12 @@ for epicIteration in range(numberOfEpicsFound):
         
     # Once all tests have been counted, update the epic in Jira with the test results
     if len(testExecution) != 0:
+        releasablePercent = ((failedReleasableTests + passedTests) / totalTests) * 100
         epicsUpdated += 1
         updateJiraEpicResponse = pip._vendor.requests.request(
             "PUT",
             f"https://nextworldproduction.atlassian.net/rest/api/3/issue/{epicKey}",
-            data=json.dumps( {"fields": {"customfield_10120": totalTests,"customfield_10122": passedTests,"customfield_10121": executedTests,"customfield_10123": remainingTests}} ),
+            data=json.dumps( {"fields": {"customfield_10120": totalTests,"customfield_10122": passedTests,"customfield_10121": executedTests,"customfield_10123": remainingTests, "customfield_10127": str(releasablePercent)}} ),
             headers=jiraRequestHeader,
             auth=jiraAuth
         )
@@ -298,10 +313,12 @@ for epicIteration in range(numberOfEpicsFound):
             print(updateJiraEpicResponse.json())
 
 
-if testSuitesNotFound:
-    print("The following tests in Xray have the Test Suite Name field populated, but the test suite was not found in Nextworld. Please check that the Test Suite Name field in Xray is correct:")
-    for test in testSuitesNotFound:
+if testSummariesNotFound:
+    print(f"The following {len(testSummariesNotFound)} tests in Xray have the Test Suite Name field populated, but the test suite was not found in Nextworld. Please check that the Test Suite Name field in Xray is correct and that the suite in Nextworld is active in the selected environment:")
+    for test in testSummariesNotFound:
          print(test)
-print(f"Updated {len(runIdStatuses)} tests with their latest test result from Nextworld")
+    print()
+
+print(f"Updated {testsFound - len(testSummariesNotFound)} tests with their latest test result from Nextworld")
 print(f"Updated the test summary on {epicsUpdated} epics.")
 print("Complete")  
