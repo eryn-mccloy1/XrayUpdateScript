@@ -298,7 +298,8 @@ for epicIteration in range(numberOfEpicsFound):
         
     # Once all tests have been counted, update the epic in Jira with the test results
     if len(testExecution) != 0:
-        releasablePercent = ((failedReleasableTests + passedTests) / totalTests) * 100
+        if totalTests != 0:
+            releasablePercent = ((failedReleasableTests + passedTests) / totalTests) * 100
         epicsUpdated += 1
         updateJiraEpicResponse = pip._vendor.requests.request(
             "PUT",
