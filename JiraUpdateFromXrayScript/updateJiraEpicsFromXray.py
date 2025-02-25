@@ -63,7 +63,7 @@ if not getNextworldAccessTokenResponse.ok:
 nextworldRequestHeaderWithToken = {
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "Authorization": f'Bearer {getNextworldAccessTokenResponse.json().get('access_token')}'
+    "Authorization": f'Bearer {getNextworldAccessTokenResponse.json().get("access_token")}'
 }
 testSuitesNotFound = []
 testSummariesNotFound = []
@@ -123,11 +123,11 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
                 testsFound += 1
 
         # Get Nextworld results for all test suites
-        testSuiteNamesFormatted = ", ".join(f'"{name}"' for name in testSuiteNames)
+        testSuiteNamesFormatted = ", ".join(json.dumps(name) for name in testSuiteNames)
         body = f'{{"testSuiteNames" : [{testSuiteNamesFormatted}]}}'
         nextworldGetTestResultsResponse = pip._vendor.requests.request(
             "POST",
-            f"{config["NEXTWORLD_URL"]}/api/data/v1/automated-testing/test-suites:getLatestResultsForSuites",
+            f"{config['NEXTWORLD_URL']}/api/data/v1/automated-testing/test-suites:getLatestResultsForSuites",
             headers=nextworldRequestHeaderWithToken,
             data=body.encode('utf-8')
         )
