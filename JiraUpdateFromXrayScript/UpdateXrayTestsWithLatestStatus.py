@@ -90,9 +90,11 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
         automatedTestExecutionAllTests = getAutomatedTestExecution.json().get('data').get('getTestExecution').get('tests').get('results')
         testIssueIds = []
         testSuiteNameWithTestSummary = {}
+        testSuiteIssueIdWithTestSummary = {}
         for test in automatedTestExecutionAllTests:
             testIssueIds.append(test['issueId'])
-            testSuiteNameWithTestSummary[test['jira']['summary']] = test['jira']['customfield_10505']
+            testSuiteNameWithTestSummary[test['issueId']] = test['jira']['customfield_10505']
+            testSuiteIssueIdWithTestSummary[test['issueId']] = test['jira']['summary']
 
         # format the list of test ids into a string separated by commas. This will be used in the request to get all test runs at once. 
         testIssueIdsFormatted = ", ".join(f'"{id}"' for id in testIssueIds)
@@ -101,31 +103,33 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
         getTestRunResponse = pip._vendor.requests.post(
             url="https://xray.cloud.getxray.app/api/v2/graphql",
             headers=xrayRequestHeader,
-            data={'query': f"""{{getTestRuns(testIssueIds: [{testIssueIdsFormatted}],testExecIssueIds: ["{testExecution}"],limit: 100) {{total results {{id test {{jira(fields: ["customfield_10505"])}}}}}}}}"""}
+            data={'query': f"""{{getTestRuns(testIssueIds: [{testIssueIdsFormatted}],testExecIssueIds: ["{testExecution}"],limit: 100) {{total results {{id test {{jira(fields: ["customfield_10490", "customfield_10505"])}}}}}}}}"""}
         )
 
         if not getTestRunResponse.ok:
             print("Error getting Xray test runs.")
             print(getTestRunResponse.json())
-            exit()
+            continue
         
         # Add test run ids to a dict with the run id as the key. Additionally, add the test suite names to a list to be used in the Nextworld request
         testRunIds = {}
-        testSuiteNames = []
+        testSuiteLinks = []
         testRuns = getTestRunResponse.json().get('data').get('getTestRuns').get('results')
         for testRun in testRuns:
             testSuiteNameOnXrayTest = testRun.get('test').get('jira').get('customfield_10505')
-            if (testSuiteNameOnXrayTest):
-                testRunIds[testRun.get('id')] = testSuiteNameOnXrayTest
-                testSuiteNames.append(testSuiteNameOnXrayTest)
+            testSuiteLinkOnXrayTest = testRun.get('test').get('jira').get('customfield_10490')
+
+            if testSuiteLinkOnXrayTest:
+                testRunIds[testRun.get('id')] = testSuiteLinkOnXrayTest
+                testSuiteLinks.append(testSuiteLinkOnXrayTest)
                 testsFound += 1
 
         # Get Nextworld results for all test suites
-        testSuiteNamesFormatted = ", ".join(json.dumps(name) for name in testSuiteNames)
-        body = f'{{"testSuiteNames" : [{testSuiteNamesFormatted}]}}'
+        testSuiteNamesFormatted = ", ".join(json.dumps(name) for name in testSuiteLinks)
+        body = f'{{"testSuiteLinks" : [{testSuiteNamesFormatted}]}}'
         nextworldGetTestResultsResponse = pip._vendor.requests.request(
             "POST",
-            f"{config['NEXTWORLD_URL']}/api/data/v1/automated-testing/test-suites:getLatestResultsForSuites",
+            f"{config['NEXTWORLD_URL']}/api/automated-testing/v1/test-suites:getLatestResultsForSuitesFromLinks",
             headers=nextworldRequestHeaderWithToken,
             data=body.encode('utf-8')
         )
@@ -134,7 +138,7 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
         if not nextworldGetTestResultsResponse.ok:
             print("Error getting Nextworld test results. Check that the Nextworld endpoint '/v1/automated-testing/test-suites/test-results:getLatestNightlyRunTestResults' is working")
             print(nextworldGetTestResultsResponseJson)
-            exit()
+            continue
 
         numberOfTests = len(nextworldGetTestResultsResponseJson)
         testSuiteStatuses = {}
@@ -160,18 +164,18 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
             if nextworldTestStatus is None:
                 testSuitesNotFound.append(nextworldGetTestResultsResponseJson[x].get('TestSuiteName'))
             
-            testSuiteStatuses[nextworldGetTestResultsResponseJson[x].get('TestSuiteName')] = xrayTestStatus
+            testSuiteStatuses[nextworldGetTestResultsResponseJson[x].get('TestResultLink')] = xrayTestStatus
 
         # Add any test suites not found to a list so it can be reported to the user
         for test_summary, test_suite in testSuiteNameWithTestSummary.items():
             if test_suite in testSuitesNotFound:
-                testSummariesNotFound.append(test_summary)
+                testUniqueName = testSuiteIssueIdWithTestSummary[test_summary]+" - "+test_summary
+                testSummariesNotFound.append(testUniqueName)
 
         # Merge the testRunIds dict with the testStatuses dict to create a dict with Test Run Id: Test Status
         runIdStatuses = {}
         for run_id, suite_name in testRunIds.items():
-            suite_result = testSuiteStatuses[suite_name]
-            runIdStatuses[run_id] = suite_result
+            runIdStatuses[run_id] = testSuiteStatuses[suite_name]
 
         # This particular endpoint only allows 25 updates at a time, so we need to chunk the data into batches of 25
         def chunk_dict(data, size=25):
@@ -200,7 +204,6 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
             if not updateTestRunResponse.ok:
                 print("Error updating Xray test runs.")
                 print(updateTestRunResponse)
-                exit()
 
         # Increment testsCounted and check if all the tests have been counted. If so, break out of the loop.
         testsCounted += 100
@@ -212,7 +215,7 @@ for testExecution in config["AUTOMATED_TEST_EXECUTIONS"]:
         loopCount += 1
 
 if testSummariesNotFound:
-    print(f"The following {len(testSummariesNotFound)} tests in Xray have the Test Suite Name field populated, but the test suite was not found in Nextworld. Please check that the Test Suite Name field in Xray is correct and that the suite in Nextworld is active in the selected environment:")
+    print(f"The following {len(testSummariesNotFound)} tests in Xray have the Test Suite Link field populated, but the test suite was not found in Nextworld. Please check that the Test Suite Link field in Xray is correct and that the suite in Nextworld is active in the selected environment:")
     for test in testSummariesNotFound:
          print(test)
     print()
