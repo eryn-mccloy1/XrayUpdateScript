@@ -38,7 +38,7 @@ nextworldRequestHeader = {
     "Accept": "application/json",
     "Content-Type": "application/json"
 }
-if config["RELEASE_PIPELINE_ID"] is not None:
+if config["RELEASE_PIPELINE_ID"] is not None and config["RELEASE_PIPELINE_ID"] != "":
     releaseId = config["RELEASE_PIPELINE_ID"].replace(".", "")
     nextworldAuthServerURL = f"https://auth-nw{releaseId}dev.releasepipeline.nextworld.net/v2/Authenticate/Tokens"
 else:
