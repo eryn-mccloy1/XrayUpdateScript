@@ -38,10 +38,16 @@ nextworldRequestHeader = {
     "Accept": "application/json",
     "Content-Type": "application/json"
 }
+if config["RELEASE_PIPELINE_ID"] is not None:
+    releaseId = config["RELEASE_PIPELINE_ID"].replace(".", "")
+    nextworldAuthServerURL = f"https://auth-nw{releaseId}dev.releasepipeline.nextworld.net/v2/Authenticate/Tokens"
+else:
+    nextworldAuthServerURL = "https://auth1.nextworld.net/v2/Authenticate/Tokens"
+
 def get_nextworld_request_header_with_token():
     getNextworldAccessTokenResponse = pip._vendor.requests.request(
     "POST",
-    "https://auth1.nextworld.net/v2/Authenticate/Tokens",
+    nextworldAuthServerURL,
         json={
         "Zone": config["NEXTWORLD_ENVIRONMENT"],
     },
